@@ -72,8 +72,8 @@ VALUES (%s, %s, %s, %s)
 """
 
 INSERT_FILE_SQL = """
-INSERT INTO program_file (program_id, file_name, mime_type, file_data)
-VALUES (%s, %s, %s, %s)
+INSERT INTO program_file (program_id, file_name, mime_type, file_data, chunk_index, total_chunks)
+VALUES (%s, %s, %s, %s, %s, %s)
 """
 
 UPDATE_PROGRAM_SQL = """
@@ -264,31 +264,34 @@ def save_schedules(conn, program_id: int, schedules: list[dict]):
 def save_files(conn, program_id: int, files: list[dict]):
     if not files:
         return
-    MAX_FILE_BYTES = 5 * 1024 * 1024  # TiDB Serverless 6MB 행 한도 여유분
+    CHUNK_SIZE = 4 * 1024 * 1024  # 4MB
     for f in files:
-        if len(f.get("file_data", b"")) > MAX_FILE_BYTES:
-            print(f"  파일 건너뜀 (5MB 초과): {f.get('file_name')}")
-            continue
-        for attempt in range(3):
-            try:
+        data = f.get("file_data", b"")
+        chunks = [data[i:i+CHUNK_SIZE] for i in range(0, max(len(data), 1), CHUNK_SIZE)]
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            for attempt in range(3):
                 try:
-                    conn.ping()
-                except Exception:
-                    conn = get_conn()
-                with conn.cursor() as cur:
-                    cur.execute(INSERT_FILE_SQL, (
-                        program_id,
-                        f["file_name"],
-                        f["mime_type"],
-                        f["file_data"],
-                    ))
-                conn.commit()
-                break
-            except Exception as e:
-                if attempt == 2:
-                    print(f"  파일 저장 실패 (3회 시도): {f.get('file_name')} — {e}")
-                else:
-                    time.sleep(2)
+                    try:
+                        conn.ping()
+                    except Exception:
+                        conn = get_conn()
+                    with conn.cursor() as cur:
+                        cur.execute(INSERT_FILE_SQL, (
+                            program_id,
+                            f["file_name"],
+                            f["mime_type"],
+                            chunk,
+                            idx,
+                            total,
+                        ))
+                    conn.commit()
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        print(f"  파일 저장 실패 (3회 시도): {f.get('file_name')} chunk {idx} — {e}")
+                    else:
+                        time.sleep(2)
 
 
 # ── 유틸 ─────────────────────────────────────────────────────────────
