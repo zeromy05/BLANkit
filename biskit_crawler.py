@@ -450,7 +450,7 @@ def _auto_login(driver, student_id: str, password: str):
         submit = driver.find_element(By.XPATH,
             "//*[self::button or self::a or self::input][contains(normalize-space(),'로그인')]"
         )
-    submit.click()
+    driver.execute_script("arguments[0].click();", submit)
 
     # 로그인 완료 대기
     WebDriverWait(driver, 20).until(
