@@ -605,6 +605,7 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
     items = []
     page = 1
     session, headers = make_session(driver)
+    crawled_urls = load_crawled_urls()
 
     while True:
         print(f"  Collecting page {page}...")
@@ -642,7 +643,7 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
             if recruit_start and recruit_start < "2026-09-01":
                 continue
 
-            if conn and item.get("detail_url"):
+            if conn and item.get("detail_url") and item["detail_url"] not in crawled_urls:
                 item["program_id"] = _save_list_preview(conn, item, session, headers)
                 print(f"    -> saved preview: {item['list_text'][:50]} (id={item['program_id']})")
             items.append(item)
