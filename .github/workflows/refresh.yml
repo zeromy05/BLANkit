@@ -6,14 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '실행 모드 (refresh=갱신, full=전체크롤링, clear=DB초기화+전체크롤링)'
+        description: '실행 모드 (refresh=갱신, full=전체크롤링)'
         required: false
         default: 'refresh'
         type: choice
         options:
           - refresh
           - full
-          - clear
 
 jobs:
   refresh:
@@ -55,22 +54,7 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_SSL: '1'
         run: |
-          MODE="${{ github.event.inputs.mode }}"
-          if [ "$MODE" = "clear" ]; then
-            python -c "
-import pymysql, os
-conn = pymysql.connect(
-    host=os.environ['DB_HOST'], port=int(os.environ['DB_PORT']),
-    user=os.environ['DB_USER'], password=os.environ['DB_PASS'],
-    database=os.environ['DB_NAME'], charset='utf8mb4', ssl={}
-)
-with conn.cursor() as cur:
-    cur.execute('DELETE FROM program')
-    print(f'DB 초기화: {cur.rowcount}개 삭제')
-conn.commit(); conn.close()
-"
-            python biskit_crawler.py --auto
-          elif [ "$MODE" = "full" ]; then
+          if [ "${{ github.event.inputs.mode }}" = "full" ]; then
             python biskit_crawler.py --auto
           else
             python biskit_crawler.py --refresh --auto
