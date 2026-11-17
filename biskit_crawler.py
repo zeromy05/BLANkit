@@ -1132,8 +1132,8 @@ def daily_refresh(driver, conn, list_url: str):
                     count_updated += 1
                     print(f"  [갱신] id={program_id}, "
                           f"신청자={card.get('applicant_count')}, 대기={card.get('waitlist_count')}")
-            else:
-                # 새 프로그램 — 목록 카드 수집 후 상세 크롤링 큐에 추가
+            elif page == 1:
+                # 새 프로그램 — 1페이지에서만 발견
                 try:
                     img = row.find_element(By.TAG_NAME, "img")
                     src = img.get_attribute("src") or ""
