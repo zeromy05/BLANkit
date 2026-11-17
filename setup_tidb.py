@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS `tag` (
 CREATE TABLE IF NOT EXISTS `program` (
   `program_id` bigint NOT NULL AUTO_INCREMENT,
   `title` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `summary` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `summary` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `description_html` mediumtext COLLATE utf8mb4_unicode_ci,
   `description_text` mediumtext COLLATE utf8mb4_unicode_ci,
   `thumbnail_data` mediumblob,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS `program` (
   `edu_start` date DEFAULT NULL,
   `edu_end` date DEFAULT NULL,
   `location` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `target` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `target` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `capacity` int NOT NULL DEFAULT '0',
   `applicant_count` int NOT NULL DEFAULT '0',
   `waitlist_count` int NOT NULL DEFAULT '0',
