@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
@@ -433,24 +434,7 @@ def _auto_login(driver, student_id: str, password: str):
     id_field.send_keys(student_id)
     pw_field.clear()
     pw_field.send_keys(password)
-
-    submit = None
-    for sel in [
-        "button[type='submit']",
-        "input[type='submit']",
-        ".btn-login",
-        ".btn_login",
-    ]:
-        els = driver.find_elements(By.CSS_SELECTOR, sel)
-        if els:
-            submit = els[0]
-            break
-    if submit is None:
-        # 텍스트로 fallback
-        submit = driver.find_element(By.XPATH,
-            "//*[self::button or self::a or self::input][contains(normalize-space(),'로그인')]"
-        )
-    driver.execute_script("arguments[0].click();", submit)
+    pw_field.send_keys(Keys.RETURN)
     time.sleep(3)
 
     # 로그인 완료 대기
