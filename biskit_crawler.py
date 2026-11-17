@@ -468,7 +468,6 @@ def _auto_login(driver, student_id: str, password: str):
     except Exception:
         print(f"  Login redirect failed. current URL = {driver.current_url}")
         print(f"  Page title = {driver.title}")
-        driver.save_screenshot("login_debug.png")
         raise
     if len(driver.window_handles) > 1:
         driver.switch_to.window(driver.window_handles[0])
