@@ -28,8 +28,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 BASE_URL = "https://biskit.kumoh.ac.kr"
-CRAWLED_LOG = "crawled_urls.txt"
-PREVIEW_MAP_LOG = "preview_map.jsonl"
 JSON_LOG = "crawled_programs.jsonl"
 
 DB_CONFIG = {
@@ -351,38 +349,6 @@ def parse_int(text: str):
     return int(m.group()) if m else None
 
 
-def load_crawled_urls() -> set:
-    try:
-        with open(CRAWLED_LOG, "r", encoding="utf-8") as f:
-            return set(line.strip() for line in f if line.strip())
-    except FileNotFoundError:
-        return set()
-
-
-def mark_crawled(url: str):
-    with open(CRAWLED_LOG, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
-
-
-def load_preview_map() -> dict:
-    """URL → program_id, 미리보기만 저장된 프로그램 추적"""
-    result = {}
-    try:
-        with open(PREVIEW_MAP_LOG, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    rec = json.loads(line)
-                    result[rec["url"]] = rec["program_id"]
-                except Exception:
-                    pass
-    except FileNotFoundError:
-        pass
-    return result
-
-
-def mark_preview(url: str, program_id: int):
-    with open(PREVIEW_MAP_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"url": url, "program_id": program_id}) + "\n")
 
 
 def save_to_json(program_id: int, url: str, data: dict):
@@ -643,7 +609,6 @@ def _process_detail(driver, conn, item: dict) -> bool:
     save_files(conn, program_id, attach_files)
     save_tags(conn, program_id, data.get("_keywords", []))
 
-    mark_crawled(url)
     save_to_json(program_id, url, data)
     print(f"    -> 저장: '{data.get('title', '')}' "
           f"(id={program_id}, images={len(images)}, files={len(attach_files)})")
@@ -658,8 +623,19 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
     items = []
     page = 1
     session, headers = make_session(driver)
-    crawled_urls = load_crawled_urls()
-    preview_map = load_preview_map()
+    # DB에서 이미 저장된 enc_seq 조회 (캐시 파일 불필요)
+    done_seqs = set()
+    preview_id_map = {}  # enc_seq → program_id (미리보기만 저장된 것)
+    if conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT enc_seq FROM program WHERE enc_seq IS NOT NULL AND recruit_start IS NOT NULL"
+            )
+            done_seqs = {row[0] for row in cur.fetchall()}
+            cur.execute(
+                "SELECT enc_seq, program_id FROM program WHERE enc_seq IS NOT NULL AND recruit_start IS NULL"
+            )
+            preview_id_map = {row[0]: row[1] for row in cur.fetchall()}
 
     while True:
         print(f"  Collecting page {page}...")
@@ -670,15 +646,16 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
 
         for row in rows:
             item = {}
+            row_enc_seq = ""
             try:
                 btn = row.find_element(By.CSS_SELECTOR, "a.detailBtn")
                 params = json.loads(btn.get_attribute("data-params") or "{}")
-                enc_seq = params.get("encSddpbSeq", "")
+                row_enc_seq = params.get("encSddpbSeq", "")
                 page_no = params.get("paginationInfo.currentPageNo", "1")
-                if enc_seq:
+                if row_enc_seq:
                     item["detail_url"] = (
                         f"{BASE_URL}/ptfol/imng/icmpNsbjtPgm/findIcmpNsbjtPgmInfo.do"
-                        f"?encSddpbSeq={enc_seq}&paginationInfo.currentPageNo={page_no}"
+                        f"?encSddpbSeq={row_enc_seq}&paginationInfo.currentPageNo={page_no}"
                     )
             except Exception:
                 pass
@@ -697,13 +674,11 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
             if recruit_start and recruit_start < "2026-09-01":
                 continue
 
-            if conn and item.get("detail_url") and item["detail_url"] not in crawled_urls:
-                detail_url = item["detail_url"]
-                if detail_url in preview_map:
-                    item["program_id"] = preview_map[detail_url]  # 기존 미리보기 재사용
+            if conn and item.get("detail_url") and row_enc_seq not in done_seqs:
+                if row_enc_seq in preview_id_map:
+                    item["program_id"] = preview_id_map[row_enc_seq]  # 기존 미리보기 재사용
                 else:
                     item["program_id"] = _save_list_preview(conn, item, session, headers)
-                    mark_preview(detail_url, item["program_id"])
                 print(f"    -> saved preview: {item['list_text'][:50]} (id={item['program_id']})")
             items.append(item)
 
@@ -1248,9 +1223,7 @@ if __name__ == "__main__":
             conn.commit()
             if deleted:
                 print(f"  고아 미리보기 {deleted}개 정리됨")
-            if deleted and os.path.exists(PREVIEW_MAP_LOG):
-                os.remove(PREVIEW_MAP_LOG)
-
+    
             print("\n[Step 1] Collecting list items + saving previews...")
             items = collect_items(driver, list_url, conn)
             if not any(isinstance(i.get("detail_url"), str) for i in items):
