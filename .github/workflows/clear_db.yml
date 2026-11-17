@@ -25,7 +25,7 @@ jobs:
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
-          python -c "
+          python - << 'EOF'
 import pymysql, os
 conn = pymysql.connect(
     host=os.environ['DB_HOST'], port=int(os.environ['DB_PORT']),
@@ -34,6 +34,7 @@ conn = pymysql.connect(
 )
 with conn.cursor() as cur:
     cur.execute('DELETE FROM program')
-    print(f'삭제: {cur.rowcount}개')
-conn.commit(); conn.close()
-"
+    print('deleted:', cur.rowcount)
+conn.commit()
+conn.close()
+EOF
