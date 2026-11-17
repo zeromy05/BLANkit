@@ -18,6 +18,7 @@ jobs:
           path: |
             crawled_urls.txt
             crawled_programs.jsonl
+            preview_map.jsonl
           key: crawl-state-${{ github.run_id }}
           restore-keys: |
             crawl-state-

@@ -29,6 +29,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 BASE_URL = "https://biskit.kumoh.ac.kr"
 CRAWLED_LOG = "crawled_urls.txt"
+PREVIEW_MAP_LOG = "preview_map.jsonl"
 JSON_LOG = "crawled_programs.jsonl"
 
 DB_CONFIG = {
@@ -338,6 +339,27 @@ def mark_crawled(url: str):
         f.write(url + "\n")
 
 
+def load_preview_map() -> dict:
+    """URL → program_id, 미리보기만 저장된 프로그램 추적"""
+    result = {}
+    try:
+        with open(PREVIEW_MAP_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    result[rec["url"]] = rec["program_id"]
+                except Exception:
+                    pass
+    except FileNotFoundError:
+        pass
+    return result
+
+
+def mark_preview(url: str, program_id: int):
+    with open(PREVIEW_MAP_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"url": url, "program_id": program_id}) + "\n")
+
+
 def save_to_json(program_id: int, url: str, data: dict):
     SKIP = {"thumbnail_data", "thumbnail_mime", "_attachments", "_keywords", "_schedules"}
     record = {"program_id": program_id, "detail_url": url}
@@ -606,6 +628,7 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
     page = 1
     session, headers = make_session(driver)
     crawled_urls = load_crawled_urls()
+    preview_map = load_preview_map()
 
     while True:
         print(f"  Collecting page {page}...")
@@ -644,7 +667,12 @@ def collect_items(driver, list_url: str, conn=None) -> list[dict]:
                 continue
 
             if conn and item.get("detail_url") and item["detail_url"] not in crawled_urls:
-                item["program_id"] = _save_list_preview(conn, item, session, headers)
+                detail_url = item["detail_url"]
+                if detail_url in preview_map:
+                    item["program_id"] = preview_map[detail_url]  # 기존 미리보기 재사용
+                else:
+                    item["program_id"] = _save_list_preview(conn, item, session, headers)
+                    mark_preview(detail_url, item["program_id"])
                 print(f"    -> saved preview: {item['list_text'][:50]} (id={item['program_id']})")
             items.append(item)
 
