@@ -1203,13 +1203,8 @@ if __name__ == "__main__":
         if REFRESH_MODE:
             print("\n[Refresh mode] 일일 갱신 시작...")
             daily_refresh(driver, conn, list_url)
-            conn.close()
-            if not AUTO_MODE:
-                input("\nPress Enter to close browser...")
-            driver.quit()
-            exit(0)
 
-        if DEBUG_ONLY:
+        elif DEBUG_ONLY:
             import json as _json
             driver.get(list_url)
             time.sleep(2)
@@ -1217,64 +1212,67 @@ if __name__ == "__main__":
             params = _json.loads(btn.get_attribute("data-params"))
             enc_seq = params.get("encSddpbSeq", "")
             print(f"DEBUG: encSddpbSeq = {enc_seq}")
-            # JS로 클릭 후 URL/내용 변화 확인
             driver.execute_script("arguments[0].click();", btn)
             time.sleep(2)
             print(f"DEBUG: after JS click URL = {driver.current_url}")
-            # POST 시도
             session, headers = make_session(driver)
             for suffix in ["findIcmpNsbjtPgmDtl.do", "findIcmpNsbjtPgmWrite.do", "write.do"]:
                 url = f"{BASE_URL}/ptfol/imng/icmpNsbjtPgm/{suffix}"
                 resp = session.post(url, data={"encSddpbSeq": enc_seq}, headers=headers, timeout=10)
                 print(f"DEBUG: POST {suffix} -> {resp.status_code}, text[:100]={resp.text[:100]}")
-            conn.close()
-            driver.quit()
-            exit(0)
 
-        # 이전 실행에서 미리보기만 저장된 고아 행 정리
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM program WHERE recruit_start IS NULL")
-            deleted = cur.rowcount
-        conn.commit()
-        if deleted:
-            print(f"  고아 미리보기 {deleted}개 정리됨")
-        if deleted and os.path.exists(PREVIEW_MAP_LOG):
-            os.remove(PREVIEW_MAP_LOG)
+        else:
+            # 이전 실행에서 미리보기만 저장된 고아 행 정리
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM program WHERE recruit_start IS NULL")
+                deleted = cur.rowcount
+            conn.commit()
+            if deleted:
+                print(f"  고아 미리보기 {deleted}개 정리됨")
+            if deleted and os.path.exists(PREVIEW_MAP_LOG):
+                os.remove(PREVIEW_MAP_LOG)
 
-        print("\n[Step 1] Collecting list items + saving previews...")
-        items = collect_items(driver, list_url, conn)
-        if not any(isinstance(i.get("detail_url"), str) for i in items):
-            print("  No href links found -> retrying with click method...")
-            items = collect_items_by_click(driver, list_url)
+            print("\n[Step 1] Collecting list items + saving previews...")
+            items = collect_items(driver, list_url, conn)
+            if not any(isinstance(i.get("detail_url"), str) for i in items):
+                print("  No href links found -> retrying with click method...")
+                items = collect_items_by_click(driver, list_url)
 
-        print(f"\nFound {len(items)} programs")
+            print(f"\nFound {len(items)} programs")
 
-        crawled_urls = load_crawled_urls()
-        if crawled_urls:
-            print(f"  {len(crawled_urls)} URLs already crawled - will skip")
+            crawled_urls = load_crawled_urls()
+            if crawled_urls:
+                print(f"  {len(crawled_urls)} URLs already crawled - will skip")
 
-        print("\n[Step 2] Fetching details + saving to DB...")
-        success = 0
-        for i, item in enumerate(items, 1):
-            if not isinstance(item.get("detail_url"), str):
-                continue
-            if item["detail_url"] in crawled_urls:
-                print(f"  ({i}/{len(items)}) Already crawled - skip")
-                continue
-            print(f"  ({i}/{len(items)}) {item['detail_url']}")
-            try:
+            print("\n[Step 2] Fetching details + saving to DB...")
+            success = 0
+            for i, item in enumerate(items, 1):
+                if not isinstance(item.get("detail_url"), str):
+                    continue
+                if item["detail_url"] in crawled_urls:
+                    print(f"  ({i}/{len(items)}) Already crawled - skip")
+                    continue
+                print(f"  ({i}/{len(items)}) {item['detail_url']}")
                 try:
-                    conn.ping(reconnect=True)
-                except Exception:
-                    conn = init_db()
-                if _process_detail(driver, conn, item):
-                    success += 1
-            except Exception as e:
-                print(f"    -> error: {e}")
+                    try:
+                        conn.ping(reconnect=True)
+                    except Exception:
+                        conn = init_db()
+                    if _process_detail(driver, conn, item):
+                        success += 1
+                except Exception as e:
+                    print(f"    -> error: {e}")
 
-        print(f"\nDone! {success}/{len(items)} programs saved to DB")
+            print(f"\nDone! {success}/{len(items)} programs saved to DB")
+
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
         if not AUTO_MODE:
             input("\nPress Enter to close browser...")
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
