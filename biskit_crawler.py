@@ -451,13 +451,20 @@ def _auto_login(driver, student_id: str, password: str):
             "//*[self::button or self::a or self::input][contains(normalize-space(),'로그인')]"
         )
     driver.execute_script("arguments[0].click();", submit)
+    time.sleep(3)
 
     # 로그인 완료 대기
-    WebDriverWait(driver, 20).until(
-        lambda d: "biskit.kumoh.ac.kr" in d.current_url
-                  and "login" not in d.current_url.lower()
-                  and "sso" not in d.current_url.lower()
-    )
+    try:
+        WebDriverWait(driver, 30).until(
+            lambda d: "biskit.kumoh.ac.kr" in d.current_url
+                      and "login" not in d.current_url.lower()
+                      and "sso" not in d.current_url.lower()
+        )
+    except Exception:
+        print(f"  Login redirect failed. current URL = {driver.current_url}")
+        print(f"  Page title = {driver.title}")
+        driver.save_screenshot("login_debug.png")
+        raise
     if len(driver.window_handles) > 1:
         driver.switch_to.window(driver.window_handles[0])
     print("Login successful!")
