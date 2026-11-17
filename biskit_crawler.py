@@ -32,12 +32,14 @@ CRAWLED_LOG = "crawled_urls.txt"
 JSON_LOG = "crawled_programs.jsonl"
 
 DB_CONFIG = {
-    "host":     os.getenv("DB_HOST", "172.30.74.43"),
-    "port":     int(os.getenv("DB_PORT", "3306")),
-    "user":     os.getenv("DB_USER", "navi"),
-    "password": os.getenv("DB_PASS", "vo8Tm5dnj1em2"),
-    "database": os.getenv("DB_NAME", "program_navigator"),
-    "charset":  "utf8mb4",
+    "host":          os.getenv("DB_HOST", "172.30.74.43"),
+    "port":          int(os.getenv("DB_PORT", "3306")),
+    "user":          os.getenv("DB_USER", "navi"),
+    "password":      os.getenv("DB_PASS", "vo8Tm5dnj1em2"),
+    "database":      os.getenv("DB_NAME", "program_navigator"),
+    "charset":       "utf8mb4",
+    "read_timeout":  120,
+    "write_timeout": 120,
     **({"ssl": {}} if os.getenv("DB_SSL") == "1" else {}),
 }
 
@@ -262,15 +264,24 @@ def save_schedules(conn, program_id: int, schedules: list[dict]):
 def save_files(conn, program_id: int, files: list[dict]):
     if not files:
         return
-    with conn.cursor() as cur:
-        for f in files:
-            cur.execute(INSERT_FILE_SQL, (
-                program_id,
-                f["file_name"],
-                f["mime_type"],
-                f["file_data"],
-            ))
-    conn.commit()
+    for f in files:
+        for attempt in range(3):
+            try:
+                conn.ping(reconnect=True)
+                with conn.cursor() as cur:
+                    cur.execute(INSERT_FILE_SQL, (
+                        program_id,
+                        f["file_name"],
+                        f["mime_type"],
+                        f["file_data"],
+                    ))
+                conn.commit()
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"  파일 저장 실패 (3회 시도): {f.get('file_name')} — {e}")
+                else:
+                    time.sleep(2)
 
 
 # ── 유틸 ─────────────────────────────────────────────────────────────
