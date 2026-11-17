@@ -23,6 +23,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -427,10 +428,13 @@ def _auto_login(driver, student_id: str, password: str):
     driver.get(BASE_URL)
     time.sleep(2)
     print(f"  Step 1: current URL = {driver.current_url}")
-    wait.until(EC.element_to_be_clickable((By.XPATH,
-        "//a[contains(text(),'로그인') or contains(@href,'login') or contains(@class,'login')]"
-    ))).click()
-    time.sleep(2)
+    try:
+        wait.until(EC.element_to_be_clickable((By.XPATH,
+            "//a[contains(text(),'로그인') or contains(@href,'login') or contains(@class,'login')]"
+        ))).click()
+    except TimeoutException:
+        pass
+    time.sleep(3)
 
     # 2단계: 포털계정 화면 → 로그인 버튼 클릭
     print(f"  Step 2: current URL = {driver.current_url}, windows = {len(driver.window_handles)}")
@@ -446,8 +450,11 @@ def _auto_login(driver, student_id: str, password: str):
         (b for b in btns if '포털' not in b.text and b.is_displayed()), None
     ) or (btns[0] if btns else None)
     if portal_btn:
-        portal_btn.click()
-    time.sleep(2)
+        try:
+            portal_btn.click()
+        except TimeoutException:
+            pass
+    time.sleep(3)
 
     # 3단계: 통합 로그인 → 아이디/비밀번호 입력
     print(f"  Step 3: current URL = {driver.current_url}, windows = {len(driver.window_handles)}")
