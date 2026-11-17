@@ -264,10 +264,17 @@ def save_schedules(conn, program_id: int, schedules: list[dict]):
 def save_files(conn, program_id: int, files: list[dict]):
     if not files:
         return
+    MAX_FILE_BYTES = 5 * 1024 * 1024  # TiDB Serverless 6MB 행 한도 여유분
     for f in files:
+        if len(f.get("file_data", b"")) > MAX_FILE_BYTES:
+            print(f"  파일 건너뜀 (5MB 초과): {f.get('file_name')}")
+            continue
         for attempt in range(3):
             try:
-                conn.ping(reconnect=True)
+                try:
+                    conn.ping()
+                except Exception:
+                    conn = get_conn()
                 with conn.cursor() as cur:
                     cur.execute(INSERT_FILE_SQL, (
                         program_id,
