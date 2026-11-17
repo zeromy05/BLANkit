@@ -273,9 +273,9 @@ def save_files(conn, program_id: int, files: list[dict]):
             for attempt in range(3):
                 try:
                     try:
-                        conn.ping()
+                        conn.ping(reconnect=True)
                     except Exception:
-                        conn = get_conn()
+                        conn = init_db()
                     with conn.cursor() as cur:
                         cur.execute(INSERT_FILE_SQL, (
                             program_id,
@@ -389,7 +389,9 @@ def create_driver():
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-popup-blocking")
     service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(30)
+    return driver
 
 
 def login(driver):
@@ -823,7 +825,10 @@ def extract_summary_from_list(list_text: str) -> str:
 
 def extract_detail(driver, item: dict) -> dict:
     url = item["detail_url"]
-    driver.get(url)
+    try:
+        driver.get(url)
+    except Exception:
+        pass  # 페이지 로드 타임아웃 — 로딩된 내용으로 파싱 시도
     time.sleep(1.5)
 
     data = {}
@@ -1139,6 +1144,10 @@ def daily_refresh(driver, conn, list_url: str):
             continue
         print(f"  ({i}/{len(new_items)}) {item['detail_url']}")
         try:
+            try:
+                conn.ping(reconnect=True)
+            except Exception:
+                conn = init_db()
             if _process_detail(driver, conn, item):
                 success += 1
         except Exception as e:
@@ -1215,6 +1224,10 @@ if __name__ == "__main__":
                 continue
             print(f"  ({i}/{len(items)}) {item['detail_url']}")
             try:
+                try:
+                    conn.ping(reconnect=True)
+                except Exception:
+                    conn = init_db()
                 if _process_detail(driver, conn, item):
                     success += 1
             except Exception as e:
