@@ -10,7 +10,9 @@ conn = pymysql.connect(
     ssl={},
 )
 with conn.cursor() as cur:
+    cur.execute('DELETE FROM program_file')
+    print('program_file deleted:', cur.rowcount)
     cur.execute('DELETE FROM program')
-    print('deleted:', cur.rowcount)
+    print('program deleted:', cur.rowcount)
 conn.commit()
 conn.close()
