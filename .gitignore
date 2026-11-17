@@ -1,0 +1,8 @@
+.env
+crawled_urls.txt
+crawled_programs.jsonl
+crawler_log.txt
+db_check.txt
+__pycache__/
+*.pyc
+*.pyo

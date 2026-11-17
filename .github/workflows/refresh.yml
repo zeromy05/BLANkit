@@ -1,0 +1,46 @@
+name: BLANkit Crawler Refresh
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore crawl state
+        uses: actions/cache@v4
+        with:
+          path: |
+            crawled_urls.txt
+            crawled_programs.jsonl
+          key: crawl-state-${{ github.run_id }}
+          restore-keys: |
+            crawl-state-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run crawler
+        env:
+          BISKIT_ID: ${{ secrets.BISKIT_ID }}
+          BISKIT_PW: ${{ secrets.BISKIT_PW }}
+          BISKIT_LIST_URL: ${{ secrets.BISKIT_LIST_URL }}
+          MAX_PAGES: '15'
+          DEBUG_ONLY: '0'
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_SSL: '1'
+        run: python biskit_crawler.py --refresh --auto
