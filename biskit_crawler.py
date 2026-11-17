@@ -1231,6 +1231,16 @@ if __name__ == "__main__":
             driver.quit()
             exit(0)
 
+        # 이전 실행에서 미리보기만 저장된 고아 행 정리
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM program WHERE recruit_start IS NULL")
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted:
+            print(f"  고아 미리보기 {deleted}개 정리됨")
+        if deleted and os.path.exists(PREVIEW_MAP_LOG):
+            os.remove(PREVIEW_MAP_LOG)
+
         print("\n[Step 1] Collecting list items + saving previews...")
         items = collect_items(driver, list_url, conn)
         if not any(isinstance(i.get("detail_url"), str) for i in items):
