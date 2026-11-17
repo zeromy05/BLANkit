@@ -51,14 +51,14 @@ INSERT INTO program (
     category, organization, manager_name, manager_contact,
     recruit_start, recruit_end, edu_start, edu_end,
     location, target, capacity, applicant_count, waitlist_count,
-    mileage, view_count, raw_data, created_at, updated_at
+    mileage, view_count, raw_data, enc_seq, created_at, updated_at
 ) VALUES (
     %s, %s, %s, %s,
     %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s, %s, %s,
-    %s, 0, %s, NOW(), NOW()
+    %s, 0, %s, %s, NOW(), NOW()
 )
 """
 
@@ -88,7 +88,7 @@ UPDATE program SET
     mileage = COALESCE(%s, mileage),
     applicant_count = COALESCE(%s, applicant_count),
     waitlist_count = COALESCE(%s, waitlist_count),
-    raw_data = %s, updated_at = NOW()
+    raw_data = %s, enc_seq = COALESCE(%s, enc_seq), updated_at = NOW()
 WHERE program_id = %s
 """
 
@@ -133,13 +133,27 @@ def init_db():
     return pymysql.connect(**DB_CONFIG)
 
 
+def ensure_schema(conn):
+    """enc_seq 컬럼 추가 및 title 컬럼 확장 (없으면 무시)"""
+    with conn.cursor() as cur:
+        try:
+            cur.execute("ALTER TABLE program ADD COLUMN enc_seq VARCHAR(100) DEFAULT NULL")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE program MODIFY COLUMN title VARCHAR(500) NOT NULL")
+        except Exception:
+            pass
+    conn.commit()
+
+
 def save_program(conn, data: dict) -> int:
     raw = data.get("raw_data")
     raw_json = json.dumps(raw, ensure_ascii=False) if raw else None
 
     with conn.cursor() as cur:
         cur.execute(INSERT_PROGRAM_SQL, (
-            data.get("title"),
+            (data.get("title") or "")[:500],
             data.get("summary"),
             data.get("description_html"),
             data.get("description_text"),
@@ -160,6 +174,7 @@ def save_program(conn, data: dict) -> int:
             data.get("waitlist_count") or 0,
             data.get("mileage") or 0,
             raw_json,
+            data.get("enc_seq"),
         ))
         last_id = cur.lastrowid
     conn.commit()
@@ -171,7 +186,7 @@ def update_program(conn, program_id: int, data: dict):
     raw_json = json.dumps(raw, ensure_ascii=False) if raw else None
     with conn.cursor() as cur:
         cur.execute(UPDATE_PROGRAM_SQL, (
-            data.get("title"),
+            (data.get("title") or "")[:500] or None,
             data.get("description_html"),
             data.get("description_text"),
             data.get("category"),
@@ -189,6 +204,7 @@ def update_program(conn, program_id: int, data: dict):
             data.get("applicant_count"),
             data.get("waitlist_count"),
             raw_json,
+            data.get("enc_seq"),
             program_id,
         ))
     conn.commit()
@@ -557,6 +573,8 @@ def _save_list_preview(conn, item: dict, session, headers) -> int:
     thumb_src = item.get("thumbnail_src")
     if thumb_src and is_program_image(thumb_src):
         thumb_data, thumb_mime = fetch_image(session, headers, thumb_src)
+    m = re.search(r"encSddpbSeq=([^&]+)", item.get("detail_url", ""))
+    enc_seq = m.group(1) if m else None
     return save_program(conn, {
         "title": title, "summary": summary,
         "thumbnail_data": thumb_data, "thumbnail_mime": thumb_mime,
@@ -566,13 +584,17 @@ def _save_list_preview(conn, item: dict, session, headers) -> int:
         "mileage": card.get("mileage", 0),
         "edu_start": card.get("edu_start"),
         "edu_end": card.get("edu_end"),
+        "enc_seq": enc_seq,
     })
 
 
 def _process_detail(driver, conn, item: dict) -> bool:
     """상세 페이지 크롤링 + DB 저장. 성공 시 True, 필터/오류 시 False."""
     url = item["detail_url"]
+    m = re.search(r"encSddpbSeq=([^&]+)", url)
+    enc_seq = m.group(1) if m else None
     data = extract_detail(driver, item)
+    data["enc_seq"] = enc_seq
 
     recruit_start = data.get("recruit_start")
     if not recruit_start or recruit_start < "2026-09-01":
@@ -1045,40 +1067,27 @@ def daily_refresh(driver, conn, list_url: str):
     - 새 프로그램: 상세 페이지까지 풀 크롤링
     - 기존 프로그램(신청기간 유효): applicant_count / waitlist_count만 UPDATE
     """
-    # 1. 기존 크롤링 기록에서 crawled encSddpbSeq 추출
-    crawled_seqs = set()
-    for u in load_crawled_urls():
-        m = re.search(r"encSddpbSeq=([^&]+)", u)
-        if m:
-            crawled_seqs.add(m.group(1))
-
-    # 2. DB에서 신청기간 유효한 program_id → encSddpbSeq 매핑
+    # 1. DB에서 직접 enc_seq 조회 (캐시 파일 불필요)
     today = date.today().strftime("%Y-%m-%d")
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT program_id FROM program WHERE recruit_end >= %s OR recruit_end IS NULL",
+            "SELECT enc_seq, program_id FROM program "
+            "WHERE enc_seq IS NOT NULL AND recruit_start IS NOT NULL"
+        )
+        rows = cur.fetchall()
+    crawled_seqs = {row[0] for row in rows}
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT enc_seq, program_id FROM program "
+            "WHERE enc_seq IS NOT NULL AND recruit_start IS NOT NULL "
+            "AND (recruit_end >= %s OR recruit_end IS NULL)",
             (today,)
         )
-        active_ids = {row[0] for row in cur.fetchall()}
-
-    seq_to_id = {}
-    try:
-        with open(JSON_LOG, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                pid = record.get("program_id")
-                url = record.get("detail_url", "")
-                m = re.search(r"encSddpbSeq=([^&]+)", url)
-                if pid in active_ids and m:
-                    seq_to_id[m.group(1)] = pid
-    except FileNotFoundError:
-        pass
+        seq_to_id = {row[0]: row[1] for row in cur.fetchall()}
 
     refresh_target_seqs = set(seq_to_id.keys())
-    print(f"신청자 수 갱신 대상: {len(refresh_target_seqs)}개")
+    print(f"DB 기존 프로그램: {len(crawled_seqs)}개, 신청자 수 갱신 대상: {len(refresh_target_seqs)}개")
 
     # 3. 목록 페이지 순회
     session, headers = make_session(driver)
@@ -1190,6 +1199,7 @@ if __name__ == "__main__":
     print("Connecting to MySQL...")
     conn = init_db()
     print("DB connected!")
+    ensure_schema(conn)
 
     driver = create_driver()
     try:
@@ -1240,17 +1250,24 @@ if __name__ == "__main__":
 
             print(f"\nFound {len(items)} programs")
 
-            crawled_urls = load_crawled_urls()
-            if crawled_urls:
-                print(f"  {len(crawled_urls)} URLs already crawled - will skip")
+            # DB에서 이미 저장된 enc_seq 조회 (캐시 파일 대신 DB가 source of truth)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT enc_seq FROM program "
+                    "WHERE enc_seq IS NOT NULL AND recruit_start IS NOT NULL"
+                )
+                crawled_seqs = {row[0] for row in cur.fetchall()}
+            if crawled_seqs:
+                print(f"  {len(crawled_seqs)} programs already in DB - will skip")
 
             print("\n[Step 2] Fetching details + saving to DB...")
             success = 0
             for i, item in enumerate(items, 1):
                 if not isinstance(item.get("detail_url"), str):
                     continue
-                if item["detail_url"] in crawled_urls:
-                    print(f"  ({i}/{len(items)}) Already crawled - skip")
+                m_seq = re.search(r"encSddpbSeq=([^&]+)", item["detail_url"])
+                if m_seq and m_seq.group(1) in crawled_seqs:
+                    print(f"  ({i}/{len(items)}) Already in DB - skip")
                     continue
                 print(f"  ({i}/{len(items)}) {item['detail_url']}")
                 try:
