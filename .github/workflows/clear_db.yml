@@ -24,17 +24,4 @@ jobs:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
-        run: |
-          python - << 'EOF'
-import pymysql, os
-conn = pymysql.connect(
-    host=os.environ['DB_HOST'], port=int(os.environ['DB_PORT']),
-    user=os.environ['DB_USER'], password=os.environ['DB_PASS'],
-    database=os.environ['DB_NAME'], charset='utf8mb4', ssl={}
-)
-with conn.cursor() as cur:
-    cur.execute('DELETE FROM program')
-    print('deleted:', cur.rowcount)
-conn.commit()
-conn.close()
-EOF
+        run: python clear_db.py
