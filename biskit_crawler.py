@@ -134,16 +134,25 @@ def init_db():
 
 
 def ensure_schema(conn):
-    """enc_seq 컬럼 추가 및 title 컬럼 확장 (없으면 무시)"""
+    """컬럼 추가/확장 (이미 적용된 경우 무시)"""
+    stmts = [
+        "ALTER TABLE program ADD COLUMN enc_seq VARCHAR(100) DEFAULT NULL",
+        "ALTER TABLE program MODIFY COLUMN title VARCHAR(500) NOT NULL",
+        "ALTER TABLE program MODIFY COLUMN summary VARCHAR(1000)",
+        "ALTER TABLE program MODIFY COLUMN category VARCHAR(100)",
+        "ALTER TABLE program MODIFY COLUMN organization VARCHAR(200)",
+        "ALTER TABLE program MODIFY COLUMN manager_name VARCHAR(100)",
+        "ALTER TABLE program MODIFY COLUMN location VARCHAR(500)",
+        "ALTER TABLE program MODIFY COLUMN target VARCHAR(1000)",
+        "ALTER TABLE program_file ADD COLUMN chunk_index INT NOT NULL DEFAULT 0",
+        "ALTER TABLE program_file ADD COLUMN total_chunks INT NOT NULL DEFAULT 1",
+    ]
     with conn.cursor() as cur:
-        try:
-            cur.execute("ALTER TABLE program ADD COLUMN enc_seq VARCHAR(100) DEFAULT NULL")
-        except Exception:
-            pass
-        try:
-            cur.execute("ALTER TABLE program MODIFY COLUMN title VARCHAR(500) NOT NULL")
-        except Exception:
-            pass
+        for stmt in stmts:
+            try:
+                cur.execute(stmt)
+            except Exception:
+                pass
     conn.commit()
 
 
