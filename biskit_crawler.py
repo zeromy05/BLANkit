@@ -76,6 +76,17 @@ INSERT INTO program_file (program_id, file_name, mime_type, file_data, chunk_ind
 VALUES (%s, %s, %s, %s, %s, %s)
 """
 
+UPDATE_DATES_SQL = """
+UPDATE program SET
+    edu_start = %s, edu_end = %s,
+    recruit_start = %s, recruit_end = %s,
+    applicant_count = COALESCE(%s, applicant_count),
+    waitlist_count = COALESCE(%s, waitlist_count),
+    capacity = COALESCE(%s, capacity),
+    updated_at = NOW()
+WHERE enc_seq = %s
+"""
+
 UPDATE_PROGRAM_SQL = """
 UPDATE program SET
     title = COALESCE(%s, title),
@@ -336,11 +347,36 @@ def parse_date(text: str):
     return None
 
 
+def parse_datetime(text: str):
+    """날짜+시간 파싱. 'YYYY.MM.DD HH:MM' 형식 → 'YYYY-MM-DD HH:MM:SS'.
+    시간 정보가 없으면 날짜만 반환 (00:00:00 없이)."""
+    if not text:
+        return None
+    text = text.strip()
+    # 날짜+시간 포맷 시도 (YYYY.MM.DD HH:MM)
+    m = re.search(
+        r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})\s+(\d{1,2}):(\d{2})", text
+    )
+    if m:
+        y, mo, d, h, mi = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5))
+        return f"{y}-{mo:02d}-{d:02d} {h:02d}:{mi:02d}:00"
+    # 날짜만 있으면 date 반환
+    return parse_date(text)
+
+
 def parse_range(text: str) -> tuple:
     parts = re.split(r"[~\-–—]", text)
     if len(parts) >= 2:
         return parse_date(parts[0]), parse_date(parts[1])
     return parse_date(text), None
+
+
+def parse_range_dt(text: str) -> tuple:
+    """parse_range의 datetime 버전 — refresh_dates 전용."""
+    parts = re.split(r"\s*~\s*", text, maxsplit=1)
+    if len(parts) >= 2:
+        return parse_datetime(parts[0]), parse_datetime(parts[1])
+    return parse_datetime(text), None
 
 
 def parse_int(text: str):
@@ -388,7 +424,8 @@ def fetch_image(session, headers, img_url: str) -> tuple[bytes, str] | tuple[Non
 AUTO_MODE = "--auto" in sys.argv
 MAX_PAGES = int(os.getenv("MAX_PAGES", "15"))
 DEBUG_ONLY = os.getenv("DEBUG_ONLY", "0") == "1"
-REFRESH_MODE = "--refresh" in sys.argv  # 신청자 수 갱신 전용 모드
+REFRESH_MODE = "--refresh" in sys.argv        # 신청자 수 갱신 전용 모드
+REFRESH_DATES_MODE = "--refresh-dates" in sys.argv  # 날짜/시간 재크롤링 모드
 
 
 def create_driver():
@@ -420,6 +457,14 @@ def login(driver):
         input("\nPress Enter after login...")
 
 
+def _is_logged_in(driver) -> bool:
+    """현재 세션이 이미 로그인 상태인지 확인"""
+    url = driver.current_url
+    page_src = driver.page_source
+    login_indicators = ["로그아웃", "logout", "mypage", "마이페이지"]
+    return any(ind in page_src.lower() for ind in login_indicators) and "login" not in url.lower()
+
+
 def _auto_login(driver, student_id: str, password: str):
     wait = WebDriverWait(driver, 10)
     print("Auto login...")
@@ -428,6 +473,7 @@ def _auto_login(driver, student_id: str, password: str):
     driver.get(BASE_URL)
     time.sleep(2)
     print(f"  Step 1: current URL = {driver.current_url}")
+
     try:
         wait.until(EC.element_to_be_clickable((By.XPATH,
             "//a[contains(text(),'로그인') or contains(@href,'login') or contains(@class,'login')]"
@@ -445,7 +491,6 @@ def _auto_login(driver, student_id: str, password: str):
         "//*[self::a or self::button][contains(normalize-space(),'로그인')]"
     )
     print(f"  Step 2: found {len(btns)} login buttons")
-    # 파란 로그인 버튼이 여러 개일 수 있으므로 '포털' 탭 안의 버튼 우선
     portal_btn = next(
         (b for b in btns if '포털' not in b.text and b.is_displayed()), None
     ) or (btns[0] if btns else None)
@@ -456,6 +501,11 @@ def _auto_login(driver, student_id: str, password: str):
             pass
     time.sleep(3)
 
+    # 로그인 버튼이 없으면 이미 로그인된 상태
+    if not btns and _is_logged_in(driver):
+        print("  Already logged in (no login button). Skipping credential step.")
+        return
+
     # 3단계: 통합 로그인 → 아이디/비밀번호 입력
     print(f"  Step 3: current URL = {driver.current_url}, windows = {len(driver.window_handles)}")
     wait = WebDriverWait(driver, 15)
@@ -463,10 +513,14 @@ def _auto_login(driver, student_id: str, password: str):
         driver.switch_to.window(driver.window_handles[-1])
         print(f"  Step 3: switched to new window = {driver.current_url}")
 
-    # 비밀번호 필드가 뜰 때까지 대기 후, 모든 visible input 중 첫 번째를 ID 필드로 사용
-    pw_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
-        "input[type='password']"
-    )))
+    # 비밀번호 필드가 없으면 이미 로그인 완료
+    try:
+        pw_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
+            "input[type='password']"
+        )))
+    except TimeoutException:
+        print("  Step 3: no password field — assuming already logged in.")
+        return
     all_inputs = driver.find_elements(By.CSS_SELECTOR,
         "input[type='text'], input[type='email'], input:not([type='password']):not([type='hidden'])"
     )
@@ -549,7 +603,7 @@ def _save_list_preview(conn, item: dict, session, headers) -> int:
     """목록 카드를 미리보기로 DB 저장. item에 card 파싱 결과를 업데이트하고 program_id 반환."""
     title = extract_title_from_list(item["list_text"])
     summary = extract_summary_from_list(item["list_text"])
-    card = parse_list_card(item["list_text"])
+    card = parse_list_card_dt(item["list_text"])
     item.update(card)
     thumb_data, thumb_mime = None, None
     thumb_src = item.get("thumbnail_src")
@@ -566,6 +620,8 @@ def _save_list_preview(conn, item: dict, session, headers) -> int:
         "mileage": card.get("mileage", 0),
         "edu_start": card.get("edu_start"),
         "edu_end": card.get("edu_end"),
+        "recruit_start": card.get("recruit_start"),
+        "recruit_end": card.get("recruit_end"),
         "enc_seq": enc_seq,
     })
 
@@ -819,6 +875,37 @@ def parse_list_card(list_text: str) -> dict:
     return result
 
 
+def parse_list_card_dt(list_text: str) -> dict:
+    """parse_list_card의 datetime 버전 — refresh_dates 전용.
+    교육기간/신청기간을 'YYYY-MM-DD HH:MM:SS' 정밀도로 파싱."""
+    result = {}
+    m = re.search(r"신청자(\d+)명", list_text)
+    if m:
+        result["applicant_count"] = int(m.group(1))
+    m = re.search(r"모집정원(\d+)명", list_text)
+    if m:
+        result["capacity"] = int(m.group(1))
+    m = re.search(r"대기자(\d+)명", list_text)
+    if m:
+        result["waitlist_count"] = int(m.group(1))
+    lines = list_text.splitlines()
+    for idx, line in enumerate(lines):
+        for keyword, start_key, end_key in [
+            ("교육기간", "edu_start", "edu_end"),
+            ("신청기간", "recruit_start", "recruit_end"),
+        ]:
+            if keyword in line:
+                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                if not val and idx + 1 < len(lines):
+                    val = lines[idx + 1].strip()
+                s, e = parse_range_dt(val)
+                if s:
+                    result[start_key] = s
+                if e:
+                    result[end_key] = e
+    return result
+
+
 def extract_title_from_list(list_text: str) -> str:
     """목록 카드에서 프로그램 제목 추출.
     구조: 조직명 → 역량들 → 운영방법 → [제목] → 요약 → 필드들
@@ -930,9 +1017,9 @@ def extract_detail(driver, item: dict) -> dict:
                     raw_data[key] = val
                 continue
             elif col == "_recruit_range":
-                data["recruit_start"], data["recruit_end"] = parse_range(val)
+                data["recruit_start"], data["recruit_end"] = parse_range_dt(val)
             elif col == "_edu_range":
-                data["edu_start"], data["edu_end"] = parse_range(val)
+                data["edu_start"], data["edu_end"] = parse_range_dt(val)
             elif col == "_manager":
                 data["manager_name"], data["manager_contact"] = parse_manager(val)
             elif col == "_capacity_waitlist":
@@ -1052,6 +1139,95 @@ def collect_attachments(session, headers, attachments: list[dict]) -> list[dict]
 
 
 # ── 일일 갱신 ─────────────────────────────────────────────────────────
+
+def refresh_dates(driver, conn, list_url: str):
+    """목록 카드에서 edu_start/edu_end/recruit_start/recruit_end 시간 포함 재수집.
+    이미 DB에 저장된 프로그램의 날짜 필드를 datetime 정밀도로 덮어씌운다.
+    """
+    driver.get(list_url)
+    time.sleep(5)
+    print(f"  [refresh-dates] 현재 URL: {driver.current_url}")
+    # 목록 URL에서 index.do로 리다이렉트 → 세션 미확립, 재로그인 시도
+    if "index.do" in driver.current_url or driver.current_url.rstrip("/") == BASE_URL.rstrip("/"):
+        print("  [refresh-dates] 세션 없음. 재로그인 시도...")
+        biskit_id = os.getenv("BISKIT_ID", "")
+        biskit_pw = os.getenv("BISKIT_PW", "")
+        if biskit_id and biskit_pw:
+            _auto_login(driver, biskit_id, biskit_pw)
+        else:
+            print("  [refresh-dates] 자격증명 없음. 수동 로그인 후 Enter...")
+            try:
+                input("Press Enter after login: ")
+            except EOFError:
+                pass
+        driver.get(list_url)
+        time.sleep(5)
+        print(f"  [refresh-dates] 재이동 후 URL: {driver.current_url}")
+
+    page = 1
+    updated = 0
+    skipped = 0
+
+    while True:
+        print(f"  [refresh-dates] page {page}...")
+        all_trs = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        print(f"    table tbody tr: {len(all_trs)}개")
+        rows = driver.find_elements(By.CSS_SELECTOR,
+            "table tbody tr, .list-item, .card-item, li.program-item"
+        )
+        rows = [r for r in rows if r.text.strip()]
+        print(f"    텍스트 있는 row: {len(rows)}개")
+        if rows:
+            print(f"    첫 번째 row 텍스트 샘플: {rows[0].text[:100]}")
+
+        for row in rows:
+            try:
+                btn = row.find_element(By.CSS_SELECTOR, "a.detailBtn")
+                params = json.loads(btn.get_attribute("data-params") or "{}")
+                enc_seq = params.get("encSddpbSeq", "")
+                if not enc_seq:
+                    continue
+            except Exception:
+                continue
+
+            card = parse_list_card_dt(row.text.strip())
+            edu_start   = card.get("edu_start")
+            edu_end     = card.get("edu_end")
+            recruit_start = card.get("recruit_start")
+            recruit_end   = card.get("recruit_end")
+            applicant_count = card.get("applicant_count")
+            waitlist_count  = card.get("waitlist_count")
+            capacity        = card.get("capacity")
+
+            if not any([edu_start, edu_end, recruit_start, recruit_end]):
+                skipped += 1
+                continue
+
+            with conn.cursor() as cur:
+                cur.execute(UPDATE_DATES_SQL, (
+                    edu_start, edu_end,
+                    recruit_start, recruit_end,
+                    applicant_count, waitlist_count, capacity,
+                    enc_seq,
+                ))
+                affected = cur.rowcount
+            conn.commit()
+            if affected:
+                updated += 1
+                print(f"    -> updated enc_seq={enc_seq} "
+                      f"edu={edu_start}~{edu_end} recruit={recruit_start}~{recruit_end}")
+            else:
+                skipped += 1
+
+        if MAX_PAGES and page >= MAX_PAGES:
+            break
+        next_p = _advance_page(driver, page)
+        if next_p is None:
+            break
+        page = next_p
+
+    print(f"\n[refresh-dates 완료] updated={updated}, skipped/not_found={skipped}")
+
 
 def daily_refresh(driver, conn, list_url: str):
     """매일 갱신용
@@ -1201,7 +1377,11 @@ if __name__ == "__main__":
             print("\nPlease navigate to the program list page in the browser.")
             list_url = input("Paste list page URL: ").strip()
 
-        if REFRESH_MODE:
+        if REFRESH_DATES_MODE:
+            print("\n[Refresh-dates mode] 목록 카드에서 날짜/시간 재수집 시작...")
+            refresh_dates(driver, conn, list_url)
+
+        elif REFRESH_MODE:
             print("\n[Refresh mode] 일일 갱신 시작...")
             daily_refresh(driver, conn, list_url)
 
@@ -1276,8 +1456,11 @@ if __name__ == "__main__":
             conn.close()
         except Exception:
             pass
-        if not AUTO_MODE:
-            input("\nPress Enter to close browser...")
+        if not AUTO_MODE and not REFRESH_DATES_MODE:
+            try:
+                input("\nPress Enter to close browser...")
+            except EOFError:
+                pass
         try:
             driver.quit()
         except Exception:

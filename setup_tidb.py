@@ -175,6 +175,8 @@ CREATE TABLE IF NOT EXISTS `program_competency` (
 CREATE TABLE IF NOT EXISTS `user_profile` (
   `user_id` bigint NOT NULL,
   `student_id` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `nickname` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `profile_image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `grade` tinyint DEFAULT NULL,
   `department_id` bigint NOT NULL,
   `major_id` bigint DEFAULT NULL,
@@ -318,6 +320,17 @@ CREATE TABLE IF NOT EXISTS `email_verification` (
   CONSTRAINT `fk_emailver_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 """),
+    ("review_like", """
+CREATE TABLE IF NOT EXISTS `review_like` (
+  `user_id` bigint NOT NULL,
+  `review_id` bigint NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`,`review_id`),
+  KEY `idx_rlike_review` (`review_id`),
+  CONSTRAINT `fk_rlike_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_rlike_review` FOREIGN KEY (`review_id`) REFERENCES `review` (`review_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""),
 ]
 
 with conn.cursor() as cur:
@@ -328,6 +341,38 @@ with conn.cursor() as cur:
             print(f"  테이블 생성: {name}")
         except Exception as e:
             print(f"  오류 ({name}): {e}")
+
+# 기존 DB 마이그레이션: 새 컬럼 추가 (이미 존재하면 무시)
+MIGRATIONS = [
+    ("user_profile에 nickname 추가",
+     "ALTER TABLE `user_profile` ADD COLUMN `nickname` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `student_id`"),
+    ("user_profile에 profile_image_url 추가",
+     "ALTER TABLE `user_profile` ADD COLUMN `profile_image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `nickname`"),
+    ("review에 like_count 추가",
+     "ALTER TABLE `review` ADD COLUMN `like_count` int NOT NULL DEFAULT 0 AFTER `content`"),
+    ("program에 survey_url 추가",
+     "ALTER TABLE `program` ADD COLUMN `survey_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL AFTER `review_summary_updated_at`"),
+    ("program.edu_start를 datetime으로 변경",
+     "ALTER TABLE `program` MODIFY COLUMN `edu_start` datetime DEFAULT NULL"),
+    ("program.edu_end를 datetime으로 변경",
+     "ALTER TABLE `program` MODIFY COLUMN `edu_end` datetime DEFAULT NULL"),
+    ("program.recruit_start를 datetime으로 변경",
+     "ALTER TABLE `program` MODIFY COLUMN `recruit_start` datetime DEFAULT NULL"),
+    ("program.recruit_end를 datetime으로 변경",
+     "ALTER TABLE `program` MODIFY COLUMN `recruit_end` datetime DEFAULT NULL"),
+]
+
+with conn.cursor() as cur:
+    for desc, sql in MIGRATIONS:
+        try:
+            cur.execute(sql)
+            conn.commit()
+            print(f"  마이그레이션 완료: {desc}")
+        except Exception as e:
+            if "Duplicate column name" in str(e) or "already exists" in str(e).lower():
+                print(f"  마이그레이션 스킵 (이미 존재): {desc}")
+            else:
+                print(f"  마이그레이션 오류 ({desc}): {e}")
 
 conn.close()
 print("\n완료!")
