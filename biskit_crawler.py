@@ -406,6 +406,35 @@ def make_session(driver):
     return session, headers
 
 
+def save_cookies(driver):
+    with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+        json.dump(driver.get_cookies(), f)
+    print(f"  세션 쿠키 저장 완료 → {COOKIE_FILE}")
+
+
+def load_cookies(driver) -> bool:
+    if not os.path.exists(COOKIE_FILE):
+        return False
+    try:
+        with open(COOKIE_FILE, encoding="utf-8") as f:
+            cookies = json.load(f)
+        driver.get(BASE_URL)
+        time.sleep(1)
+        for c in cookies:
+            c.pop("sameSite", None)
+            try:
+                driver.add_cookie(c)
+            except Exception:
+                pass
+        driver.refresh()
+        time.sleep(2)
+        print("  저장된 쿠키 로드 완료")
+        return True
+    except Exception as e:
+        print(f"  쿠키 로드 실패: {e}")
+        return False
+
+
 def fetch_image(session, headers, img_url: str) -> tuple[bytes, str] | tuple[None, None]:
     """이미지 바이너리와 mime_type 반환. 실패 시 (None, None)"""
     try:
@@ -426,6 +455,8 @@ MAX_PAGES = int(os.getenv("MAX_PAGES", "15"))
 DEBUG_ONLY = os.getenv("DEBUG_ONLY", "0") == "1"
 REFRESH_MODE = "--refresh" in sys.argv        # 신청자 수 갱신 전용 모드
 REFRESH_DATES_MODE = "--refresh-dates" in sys.argv  # 날짜/시간 재크롤링 모드
+TWO_FA_WAIT  = int(os.getenv("BISKIT_2FA_WAIT", "90"))
+COOKIE_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "biskit_cookies.json")
 
 
 def create_driver():
@@ -450,6 +481,10 @@ def login(driver):
     biskit_pw = os.getenv("BISKIT_PW", "")
 
     if biskit_id and biskit_pw:
+        if load_cookies(driver) and _is_logged_in(driver):
+            print("  저장된 세션으로 로그인 성공 (2FA 불필요)")
+            return
+        print("  세션 만료 또는 쿠키 없음 → 일반 로그인 시도...")
         _auto_login(driver, biskit_id, biskit_pw)
     else:
         driver.get(BASE_URL)
@@ -463,6 +498,42 @@ def _is_logged_in(driver) -> bool:
     page_src = driver.page_source
     login_indicators = ["로그아웃", "logout", "mypage", "마이페이지"]
     return any(ind in page_src.lower() for ind in login_indicators) and "login" not in url.lower()
+
+
+def _handle_2fa(driver):
+    """2FA: 대표앱 선택 → alert dismiss → 폰 승인 대기 → 인증완료 클릭"""
+    print("  [2FA] 2차 인증 화면 감지")
+    wait = WebDriverWait(driver, 10)
+
+    try:
+        btn = wait.until(EC.element_to_be_clickable((By.ID, "userSecondAuthBtn")))
+        btn.click()
+        print("  [2FA] 금오공과대 대표앱 선택 완료")
+    except TimeoutException:
+        raise Exception("[2FA] 대표앱 버튼을 찾을 수 없습니다")
+
+    time.sleep(2)
+
+    try:
+        WebDriverWait(driver, 5).until(EC.alert_is_present())
+        driver.switch_to.alert.accept()
+        print("  [2FA] 알림 발송 팝업 확인")
+    except TimeoutException:
+        pass
+
+    print(f"  [2FA] 폰 앱 승인 대기 중... ({TWO_FA_WAIT}초 후 인증완료 클릭)")
+    time.sleep(TWO_FA_WAIT)
+
+    try:
+        cert_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable(
+                (By.XPATH, "//button[contains(text(), '인증완료')]")
+            )
+        )
+        cert_btn.click()
+        print("  [2FA] 인증완료 클릭")
+    except TimeoutException:
+        raise Exception("[2FA] 인증완료 버튼을 찾을 수 없습니다")
 
 
 def _auto_login(driver, student_id: str, password: str):
@@ -534,7 +605,24 @@ def _auto_login(driver, student_id: str, password: str):
     pw_field.send_keys(Keys.RETURN)
     time.sleep(3)
 
-    # 로그인 완료 대기
+    # 2FA 선택 페이지 감지 (biskit 직행 or 2FA 페이지)
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: (
+                "biskit.kumoh.ac.kr" in d.current_url
+                and "login" not in d.current_url.lower()
+                and "sso" not in d.current_url.lower()
+            ) or "/login/page/" in d.current_url
+        )
+    except TimeoutException:
+        pass
+
+    time.sleep(2)  # 페이지 완전 로드 대기
+
+    if driver.find_elements(By.ID, "userSecondAuthBtn"):
+        _handle_2fa(driver)
+
+    # biskit 최종 리다이렉트 대기
     try:
         WebDriverWait(driver, 30).until(
             lambda d: "biskit.kumoh.ac.kr" in d.current_url
@@ -548,6 +636,7 @@ def _auto_login(driver, student_id: str, password: str):
     if len(driver.window_handles) > 1:
         driver.switch_to.window(driver.window_handles[0])
     print("Login successful!")
+    save_cookies(driver)
 
 
 # ── 공통 헬퍼 ─────────────────────────────────────────────────────────
@@ -1293,15 +1382,22 @@ def daily_refresh(driver, conn, list_url: str):
                 # 기존 프로그램 — 신청기간 유효한 것만 신청자 수 갱신
                 if enc_seq in refresh_target_seqs:
                     program_id = seq_to_id[enc_seq]
-                    card = parse_list_card(row.text.strip())
+                    card = parse_list_card_dt(row.text.strip())
                     with conn.cursor() as cur:
                         cur.execute(
                             "UPDATE program SET "
                             "applicant_count = COALESCE(%s, applicant_count), "
                             "waitlist_count = COALESCE(%s, waitlist_count), "
+                            "edu_start = COALESCE(%s, edu_start), "
+                            "edu_end = COALESCE(%s, edu_end), "
+                            "recruit_start = COALESCE(%s, recruit_start), "
+                            "recruit_end = COALESCE(%s, recruit_end), "
                             "updated_at = NOW() "
                             "WHERE program_id = %s",
-                            (card.get("applicant_count"), card.get("waitlist_count"), program_id)
+                            (card.get("applicant_count"), card.get("waitlist_count"),
+                             card.get("edu_start"), card.get("edu_end"),
+                             card.get("recruit_start"), card.get("recruit_end"),
+                             program_id)
                         )
                     conn.commit()
                     refresh_target_seqs.discard(enc_seq)

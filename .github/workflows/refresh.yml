@@ -2,7 +2,7 @@ name: BLANkit Crawler Refresh
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 0,8,16 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -30,11 +30,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore session cookies
+        uses: actions/cache/restore@v4
+        with:
+          path: biskit_cookies.json
+          key: biskit-session-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            biskit-session-${{ runner.os }}-
+
       - name: Run crawler
         env:
           BISKIT_ID: ${{ secrets.BISKIT_ID }}
           BISKIT_PW: ${{ secrets.BISKIT_PW }}
           BISKIT_LIST_URL: ${{ secrets.BISKIT_LIST_URL }}
+          BISKIT_2FA_WAIT: '90'
           MAX_PAGES: '15'
           DEBUG_ONLY: '0'
           DB_HOST: ${{ secrets.DB_HOST }}
@@ -51,3 +60,10 @@ jobs:
           else
             python biskit_crawler.py --refresh --auto
           fi
+
+      - name: Save session cookies
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: biskit_cookies.json
+          key: biskit-session-${{ runner.os }}-${{ github.run_id }}
