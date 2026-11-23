@@ -6,13 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '실행 모드 (refresh=갱신, refresh-dates=날짜시간갱신, full=전체크롤링)'
+        description: '실행 모드 (refresh=갱신, full=전체크롤링)'
         required: false
         default: 'refresh'
         type: choice
         options:
           - refresh
-          - refresh-dates
           - full
 
 jobs:
@@ -55,8 +54,6 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.mode }}" = "full" ]; then
             python biskit_crawler.py --auto
-          elif [ "${{ github.event.inputs.mode }}" = "refresh-dates" ]; then
-            python biskit_crawler.py --refresh-dates --auto
           else
             python biskit_crawler.py --refresh --auto
           fi

@@ -76,20 +76,10 @@ INSERT INTO program_file (program_id, file_name, mime_type, file_data, chunk_ind
 VALUES (%s, %s, %s, %s, %s, %s)
 """
 
-UPDATE_DATES_SQL = """
-UPDATE program SET
-    edu_start = %s, edu_end = %s,
-    recruit_start = %s, recruit_end = %s,
-    applicant_count = COALESCE(%s, applicant_count),
-    waitlist_count = COALESCE(%s, waitlist_count),
-    capacity = COALESCE(%s, capacity),
-    updated_at = NOW()
-WHERE enc_seq = %s
-"""
-
 UPDATE_PROGRAM_SQL = """
 UPDATE program SET
     title = COALESCE(%s, title),
+    summary = COALESCE(%s, summary),
     description_html = %s, description_text = %s,
     category = %s, organization = %s, manager_name = %s, manager_contact = %s,
     recruit_start = %s, recruit_end = %s,
@@ -206,6 +196,7 @@ def update_program(conn, program_id: int, data: dict):
     with conn.cursor() as cur:
         cur.execute(UPDATE_PROGRAM_SQL, (
             (data.get("title") or "")[:500] or None,
+            (data.get("summary") or "")[:500] or None,
             data.get("description_html"),
             data.get("description_text"),
             data.get("category"),
@@ -372,7 +363,7 @@ def parse_range(text: str) -> tuple:
 
 
 def parse_range_dt(text: str) -> tuple:
-    """parse_range의 datetime 버전 — refresh_dates 전용."""
+    """parse_range의 datetime 버전."""
     parts = re.split(r"\s*~\s*", text, maxsplit=1)
     if len(parts) >= 2:
         return parse_datetime(parts[0]), parse_datetime(parts[1])
@@ -454,7 +445,6 @@ AUTO_MODE = "--auto" in sys.argv
 MAX_PAGES = int(os.getenv("MAX_PAGES", "15"))
 DEBUG_ONLY = os.getenv("DEBUG_ONLY", "0") == "1"
 REFRESH_MODE = "--refresh" in sys.argv        # 신청자 수 갱신 전용 모드
-REFRESH_DATES_MODE = "--refresh-dates" in sys.argv  # 날짜/시간 재크롤링 모드
 TWO_FA_WAIT  = int(os.getenv("BISKIT_2FA_WAIT", "90"))
 COOKIE_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "biskit_cookies.json")
 
@@ -470,9 +460,17 @@ def create_driver():
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-zygote")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--mute-audio")
+        options.add_argument("--disable-software-rasterizer")
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(60)
     return driver
 
 
@@ -481,7 +479,12 @@ def login(driver):
     biskit_pw = os.getenv("BISKIT_PW", "")
 
     if biskit_id and biskit_pw:
-        if load_cookies(driver) and _is_logged_in(driver):
+        try:
+            cookie_ok = load_cookies(driver) and _is_logged_in(driver)
+        except Exception as e:
+            print(f"  쿠키 로드 중 드라이버 오류: {e}")
+            cookie_ok = False
+        if cookie_ok:
             print("  저장된 세션으로 로그인 성공 (2FA 불필요)")
             return
         print("  세션 만료 또는 쿠키 없음 → 일반 로그인 시도...")
@@ -1010,7 +1013,7 @@ def parse_list_card(list_text: str) -> dict:
 
 
 def parse_list_card_dt(list_text: str) -> dict:
-    """parse_list_card의 datetime 버전 — refresh_dates 전용.
+    """parse_list_card의 datetime 버전.
     교육기간/신청기간을 'YYYY-MM-DD HH:MM:SS' 정밀도로 파싱."""
     result = {}
     m = re.search(r"신청자(\d+)명", list_text)
@@ -1059,6 +1062,10 @@ def extract_title_from_list(list_text: str) -> str:
     return lines[0][:200] if lines else ""
 
 
+_DATE_RANGE_PAT = re.compile(
+    r"^\d{4}[.\-/]\d{2}[.\-/]\d{2}"  # 날짜 범위 값 줄 (교육기간 : 다음 줄)
+)
+
 def extract_summary_from_list(list_text: str) -> str:
     """목록 카드 텍스트에서 짧은 소개 추출 (제목 다음 줄)"""
     skip_keywords = ['역량', '운영방법', '신청대상', '신청조건', '신청기간', '신청학년',
@@ -1070,6 +1077,8 @@ def extract_summary_from_list(list_text: str) -> str:
         if i == 0:
             continue
         if any(kw in line for kw in skip_keywords):
+            continue
+        if _DATE_RANGE_PAT.match(line):  # 날짜/시간 범위 값 라인 skip
             continue
         if len(line) < 5:
             continue
@@ -1274,95 +1283,6 @@ def collect_attachments(session, headers, attachments: list[dict]) -> list[dict]
 
 # ── 일일 갱신 ─────────────────────────────────────────────────────────
 
-def refresh_dates(driver, conn, list_url: str):
-    """목록 카드에서 edu_start/edu_end/recruit_start/recruit_end 시간 포함 재수집.
-    이미 DB에 저장된 프로그램의 날짜 필드를 datetime 정밀도로 덮어씌운다.
-    """
-    driver.get(list_url)
-    time.sleep(5)
-    print(f"  [refresh-dates] 현재 URL: {driver.current_url}")
-    # 목록 URL에서 index.do로 리다이렉트 → 세션 미확립, 재로그인 시도
-    if "index.do" in driver.current_url or driver.current_url.rstrip("/") == BASE_URL.rstrip("/"):
-        print("  [refresh-dates] 세션 없음. 재로그인 시도...")
-        biskit_id = os.getenv("BISKIT_ID", "")
-        biskit_pw = os.getenv("BISKIT_PW", "")
-        if biskit_id and biskit_pw:
-            _auto_login(driver, biskit_id, biskit_pw)
-        else:
-            print("  [refresh-dates] 자격증명 없음. 수동 로그인 후 Enter...")
-            try:
-                input("Press Enter after login: ")
-            except EOFError:
-                pass
-        driver.get(list_url)
-        time.sleep(5)
-        print(f"  [refresh-dates] 재이동 후 URL: {driver.current_url}")
-
-    page = 1
-    updated = 0
-    skipped = 0
-
-    while True:
-        print(f"  [refresh-dates] page {page}...")
-        all_trs = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-        print(f"    table tbody tr: {len(all_trs)}개")
-        rows = driver.find_elements(By.CSS_SELECTOR,
-            "table tbody tr, .list-item, .card-item, li.program-item"
-        )
-        rows = [r for r in rows if r.text.strip()]
-        print(f"    텍스트 있는 row: {len(rows)}개")
-        if rows:
-            print(f"    첫 번째 row 텍스트 샘플: {rows[0].text[:100]}")
-
-        for row in rows:
-            try:
-                btn = row.find_element(By.CSS_SELECTOR, "a.detailBtn")
-                params = json.loads(btn.get_attribute("data-params") or "{}")
-                enc_seq = params.get("encSddpbSeq", "")
-                if not enc_seq:
-                    continue
-            except Exception:
-                continue
-
-            card = parse_list_card_dt(row.text.strip())
-            edu_start   = card.get("edu_start")
-            edu_end     = card.get("edu_end")
-            recruit_start = card.get("recruit_start")
-            recruit_end   = card.get("recruit_end")
-            applicant_count = card.get("applicant_count")
-            waitlist_count  = card.get("waitlist_count")
-            capacity        = card.get("capacity")
-
-            if not any([edu_start, edu_end, recruit_start, recruit_end]):
-                skipped += 1
-                continue
-
-            with conn.cursor() as cur:
-                cur.execute(UPDATE_DATES_SQL, (
-                    edu_start, edu_end,
-                    recruit_start, recruit_end,
-                    applicant_count, waitlist_count, capacity,
-                    enc_seq,
-                ))
-                affected = cur.rowcount
-            conn.commit()
-            if affected:
-                updated += 1
-                print(f"    -> updated enc_seq={enc_seq} "
-                      f"edu={edu_start}~{edu_end} recruit={recruit_start}~{recruit_end}")
-            else:
-                skipped += 1
-
-        if MAX_PAGES and page >= MAX_PAGES:
-            break
-        next_p = _advance_page(driver, page)
-        if next_p is None:
-            break
-        page = next_p
-
-    print(f"\n[refresh-dates 완료] updated={updated}, skipped/not_found={skipped}")
-
-
 def daily_refresh(driver, conn, list_url: str):
     """매일 갱신용
     - 새 프로그램: 상세 페이지까지 풀 크롤링
@@ -1511,18 +1431,28 @@ if __name__ == "__main__":
 
     driver = create_driver()
     try:
-        login(driver)
+        for _login_attempt in range(3):
+            try:
+                login(driver)
+                break
+            except Exception as e:
+                if _login_attempt >= 2:
+                    raise
+                print(f"  로그인 실패 (시도 {_login_attempt + 1}/3): {e}")
+                print("  드라이버 재생성 후 재시도...")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(5)
+                driver = create_driver()
 
         list_url = os.getenv("BISKIT_LIST_URL", "").strip()
         if not list_url:
             print("\nPlease navigate to the program list page in the browser.")
             list_url = input("Paste list page URL: ").strip()
 
-        if REFRESH_DATES_MODE:
-            print("\n[Refresh-dates mode] 목록 카드에서 날짜/시간 재수집 시작...")
-            refresh_dates(driver, conn, list_url)
-
-        elif REFRESH_MODE:
+        if REFRESH_MODE:
             print("\n[Refresh mode] 일일 갱신 시작...")
             daily_refresh(driver, conn, list_url)
 
@@ -1552,15 +1482,8 @@ if __name__ == "__main__":
             if deleted:
                 print(f"  고아 미리보기 {deleted}개 정리됨")
     
-            print("\n[Step 1] Collecting list items + saving previews...")
-            items = collect_items(driver, list_url, conn)
-            if not any(isinstance(i.get("detail_url"), str) for i in items):
-                print("  No href links found -> retrying with click method...")
-                items = collect_items_by_click(driver, list_url)
-
-            print(f"\nFound {len(items)} programs")
-
-            # DB에서 이미 저장된 enc_seq 조회 (캐시 파일 대신 DB가 source of truth)
+            # collect_items 호출 전에 조회해야 함 — 이후 preview 저장 시
+            # recruit_start가 채워지므로 타이밍이 늦으면 신규 항목도 skip됨
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT enc_seq FROM program "
@@ -1569,6 +1492,14 @@ if __name__ == "__main__":
                 crawled_seqs = {row[0] for row in cur.fetchall()}
             if crawled_seqs:
                 print(f"  {len(crawled_seqs)} programs already in DB - will skip")
+
+            print("\n[Step 1] Collecting list items + saving previews...")
+            items = collect_items(driver, list_url, conn)
+            if not any(isinstance(i.get("detail_url"), str) for i in items):
+                print("  No href links found -> retrying with click method...")
+                items = collect_items_by_click(driver, list_url)
+
+            print(f"\nFound {len(items)} programs")
 
             print("\n[Step 2] Fetching details + saving to DB...")
             success = 0
@@ -1597,7 +1528,7 @@ if __name__ == "__main__":
             conn.close()
         except Exception:
             pass
-        if not AUTO_MODE and not REFRESH_DATES_MODE:
+        if not AUTO_MODE:
             try:
                 input("\nPress Enter to close browser...")
             except EOFError:
