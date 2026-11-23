@@ -521,8 +521,13 @@ def _handle_2fa(driver):
     except TimeoutException:
         pass
 
-    print(f"  [2FA] 폰 앱 승인 대기 중... ({TWO_FA_WAIT}초 후 인증완료 클릭)")
+    print(f"  [2FA] 폰 앱 승인 대기 중... ({TWO_FA_WAIT}초)")
     time.sleep(TWO_FA_WAIT)
+
+    # 폰 승인 후 이미 자동 리다이렉트 됐으면 완료
+    if "/login/page/" not in driver.current_url:
+        print("  [2FA] 폰 승인으로 자동 인증 완료")
+        return
 
     try:
         cert_btn = WebDriverWait(driver, 10).until(
@@ -533,7 +538,10 @@ def _handle_2fa(driver):
         cert_btn.click()
         print("  [2FA] 인증완료 클릭")
     except TimeoutException:
-        raise Exception("[2FA] 인증완료 버튼을 찾을 수 없습니다")
+        if "/login/page/" not in driver.current_url:
+            print("  [2FA] 자동 인증 완료 (버튼 없음)")
+        else:
+            raise Exception("[2FA] 인증완료 버튼을 찾을 수 없습니다")
 
 
 def _auto_login(driver, student_id: str, password: str):
