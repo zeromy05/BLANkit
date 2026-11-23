@@ -523,32 +523,37 @@ def _handle_2fa(driver):
 
     print(f"  [2FA] 폰 앱 승인 대기 중... (최대 {TWO_FA_WAIT}초)")
     deadline = time.time() + TWO_FA_WAIT
-    poll_no = 0
+    last_click_time = 0  # 마지막 버튼 클릭 시각 (쿨다운용)
+    CLICK_COOLDOWN = 20  # 클릭 간격 최소 20초
 
     while time.time() < deadline:
         time.sleep(3)
-        poll_no += 1
 
-        # 잔여 alert 처리
+        # alert 처리 (Authentication failed 등)
         try:
-            driver.switch_to.alert.accept()
+            alert = driver.switch_to.alert
+            alert_text = alert.text
+            print(f"  [2FA] 알림창 감지 후 닫음: {alert_text}")
+            alert.accept()
+            time.sleep(1)
         except Exception:
             pass
 
-        # 자동 리다이렉트 감지
-        if "/login/page/" not in driver.current_url:
-            print(f"  [2FA] 인증 완료 (URL: {driver.current_url})")
-            return
+        # URL 체크 (자동 리다이렉트 or 클릭 후 이동)
+        try:
+            if "/login/page/" not in driver.current_url:
+                print(f"  [2FA] 인증 완료 (URL: {driver.current_url})")
+                return
+        except Exception:
+            pass
 
-        # id='chk' 버튼 직접 클릭, 없으면 텍스트로 fallback
+        # 쿨다운 지난 경우에만 버튼 클릭 시도
+        if time.time() - last_click_time < CLICK_COOLDOWN:
+            continue
+
         result = driver.execute_script("""
-            // 1순위: id='chk' 버튼 (Certified 버튼)
             var chk = document.getElementById('chk');
-            if (chk) {
-                chk.click();
-                return 'clicked:BUTTON#chk';
-            }
-            // 2순위: '인증완료' 또는 'Certified' 텍스트
+            if (chk) { chk.click(); return 'clicked:BUTTON#chk'; }
             var tags = ['button','a','input','span','div','p'];
             var targets = ['인증완료', 'Certified', 'certified'];
             for (var t = 0; t < tags.length; t++) {
@@ -563,25 +568,15 @@ def _handle_2fa(driver):
                     }
                 }
             }
-            var info = [];
-            var cels = document.querySelectorAll('button,a,input[type=button],input[type=submit]');
-            for (var i = 0; i < cels.length; i++) {
-                var t = (cels[i].textContent || cels[i].value || '').trim();
-                if (t) info.push('[' + cels[i].tagName + '#' + (cels[i].id||'') + ']' + t.substring(0,20));
-            }
-            return 'not_found|' + info.join('||');
+            return 'not_found';
         """)
 
         if result and result.startswith('clicked:'):
-            print(f"  [2FA] 버튼 클릭: {result}")
-            time.sleep(2)
-            if "/login/page/" not in driver.current_url:
-                print("  [2FA] 인증완료 클릭 후 이동 성공")
-                return
-        elif poll_no % 5 == 0:
+            print(f"  [2FA] 버튼 클릭: {result} (남은시간 {int(deadline - time.time())}초)")
+            last_click_time = time.time()
+        else:
             remaining = int(deadline - time.time())
-            print(f"  [2FA] {remaining}초 남음, 현재 URL={driver.current_url}")
-            print(f"  [2FA] 페이지 버튼 목록: {result}")
+            print(f"  [2FA] 대기 중... {remaining}초 남음")
 
     raise Exception(f"[2FA] 인증 타임아웃 ({TWO_FA_WAIT}초) — URL: {driver.current_url}")
 
