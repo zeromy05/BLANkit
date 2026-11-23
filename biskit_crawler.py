@@ -521,27 +521,43 @@ def _handle_2fa(driver):
     except TimeoutException:
         pass
 
-    print(f"  [2FA] 폰 앱 승인 대기 중... ({TWO_FA_WAIT}초)")
-    time.sleep(TWO_FA_WAIT)
+    print(f"  [2FA] 폰 앱 승인 대기 중... (최대 {TWO_FA_WAIT}초)")
+    deadline = time.time() + TWO_FA_WAIT
 
-    # 폰 승인 후 이미 자동 리다이렉트 됐으면 완료
-    if "/login/page/" not in driver.current_url:
-        print("  [2FA] 폰 승인으로 자동 인증 완료")
-        return
+    while time.time() < deadline:
+        time.sleep(3)
 
-    try:
-        cert_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(text(), '인증완료')]")
-            )
-        )
-        cert_btn.click()
-        print("  [2FA] 인증완료 클릭")
-    except TimeoutException:
+        # 잔여 alert 처리
+        try:
+            driver.switch_to.alert.accept()
+        except Exception:
+            pass
+
+        # 자동 리다이렉트 감지
         if "/login/page/" not in driver.current_url:
-            print("  [2FA] 자동 인증 완료 (버튼 없음)")
-        else:
-            raise Exception("[2FA] 인증완료 버튼을 찾을 수 없습니다")
+            print(f"  [2FA] 인증 완료 (URL: {driver.current_url})")
+            return
+
+        # 인증완료 버튼 클릭 시도
+        btns = driver.find_elements(
+            By.XPATH,
+            "//*[normalize-space()='인증완료' and (self::button or self::a or self::input)]"
+        )
+        if not btns:
+            btns = driver.find_elements(
+                By.XPATH, "//*[contains(normalize-space(), '인증완료')]"
+            )
+        if btns:
+            try:
+                driver.execute_script("arguments[0].click();", btns[0])
+                time.sleep(2)
+                if "/login/page/" not in driver.current_url:
+                    print("  [2FA] 인증완료 클릭 성공")
+                    return
+            except Exception:
+                pass
+
+    raise Exception(f"[2FA] 인증 타임아웃 ({TWO_FA_WAIT}초) — URL: {driver.current_url}")
 
 
 def _auto_login(driver, student_id: str, password: str):
