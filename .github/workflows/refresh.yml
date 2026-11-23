@@ -43,7 +43,7 @@ jobs:
           BISKIT_ID: ${{ secrets.BISKIT_ID }}
           BISKIT_PW: ${{ secrets.BISKIT_PW }}
           BISKIT_LIST_URL: ${{ secrets.BISKIT_LIST_URL }}
-          BISKIT_2FA_WAIT: '90'
+          BISKIT_2FA_WAIT: '180'
           MAX_PAGES: '15'
           DEBUG_ONLY: '0'
           DB_HOST: ${{ secrets.DB_HOST }}

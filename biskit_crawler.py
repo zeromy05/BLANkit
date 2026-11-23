@@ -523,9 +523,11 @@ def _handle_2fa(driver):
 
     print(f"  [2FA] 폰 앱 승인 대기 중... (최대 {TWO_FA_WAIT}초)")
     deadline = time.time() + TWO_FA_WAIT
+    poll_no = 0
 
     while time.time() < deadline:
         time.sleep(3)
+        poll_no += 1
 
         # 잔여 alert 처리
         try:
@@ -538,24 +540,39 @@ def _handle_2fa(driver):
             print(f"  [2FA] 인증 완료 (URL: {driver.current_url})")
             return
 
-        # 인증완료 버튼 클릭 시도
-        btns = driver.find_elements(
-            By.XPATH,
-            "//*[normalize-space()='인증완료' and (self::button or self::a or self::input)]"
-        )
-        if not btns:
-            btns = driver.find_elements(
-                By.XPATH, "//*[contains(normalize-space(), '인증완료')]"
-            )
-        if btns:
-            try:
-                driver.execute_script("arguments[0].click();", btns[0])
-                time.sleep(2)
-                if "/login/page/" not in driver.current_url:
-                    print("  [2FA] 인증완료 클릭 성공")
-                    return
-            except Exception:
-                pass
+        # JavaScript로 '인증완료' 텍스트를 가진 요소 클릭
+        result = driver.execute_script("""
+            var tags = ['button','a','input','span','div','p'];
+            for (var t = 0; t < tags.length; t++) {
+                var els = document.getElementsByTagName(tags[t]);
+                for (var i = 0; i < els.length; i++) {
+                    var txt = (els[i].textContent || els[i].value || '').replace(/\\s/g,'');
+                    if (txt === '인증완료') {
+                        els[i].click();
+                        return 'clicked:' + tags[t] + '#' + (els[i].id||'') + ' class=' + (els[i].className||'');
+                    }
+                }
+            }
+            // 전체 clickable 요소 텍스트 목록 반환 (디버그용)
+            var info = [];
+            var cels = document.querySelectorAll('button,a,input[type=button],input[type=submit]');
+            for (var i = 0; i < cels.length; i++) {
+                var t = (cels[i].textContent || cels[i].value || '').trim();
+                if (t) info.push('[' + cels[i].tagName + '#' + (cels[i].id||'') + ']' + t.substring(0,20));
+            }
+            return 'not_found|' + info.join('||');
+        """)
+
+        if result and result.startswith('clicked:'):
+            print(f"  [2FA] 버튼 클릭: {result}")
+            time.sleep(2)
+            if "/login/page/" not in driver.current_url:
+                print("  [2FA] 인증완료 클릭 후 이동 성공")
+                return
+        elif poll_no % 5 == 0:
+            remaining = int(deadline - time.time())
+            print(f"  [2FA] {remaining}초 남음, 현재 URL={driver.current_url}")
+            print(f"  [2FA] 페이지 버튼 목록: {result}")
 
     raise Exception(f"[2FA] 인증 타임아웃 ({TWO_FA_WAIT}초) — URL: {driver.current_url}")
 
