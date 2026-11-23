@@ -540,20 +540,29 @@ def _handle_2fa(driver):
             print(f"  [2FA] 인증 완료 (URL: {driver.current_url})")
             return
 
-        # JavaScript로 '인증완료' 텍스트를 가진 요소 클릭
+        # id='chk' 버튼 직접 클릭, 없으면 텍스트로 fallback
         result = driver.execute_script("""
+            // 1순위: id='chk' 버튼 (Certified 버튼)
+            var chk = document.getElementById('chk');
+            if (chk) {
+                chk.click();
+                return 'clicked:BUTTON#chk';
+            }
+            // 2순위: '인증완료' 또는 'Certified' 텍스트
             var tags = ['button','a','input','span','div','p'];
+            var targets = ['인증완료', 'Certified', 'certified'];
             for (var t = 0; t < tags.length; t++) {
                 var els = document.getElementsByTagName(tags[t]);
                 for (var i = 0; i < els.length; i++) {
-                    var txt = (els[i].textContent || els[i].value || '').replace(/\\s/g,'');
-                    if (txt === '인증완료') {
-                        els[i].click();
-                        return 'clicked:' + tags[t] + '#' + (els[i].id||'') + ' class=' + (els[i].className||'');
+                    var txt = (els[i].textContent || els[i].value || '').trim();
+                    for (var k = 0; k < targets.length; k++) {
+                        if (txt === targets[k]) {
+                            els[i].click();
+                            return 'clicked:' + tags[t] + '#' + (els[i].id||'');
+                        }
                     }
                 }
             }
-            // 전체 clickable 요소 텍스트 목록 반환 (디버그용)
             var info = [];
             var cels = document.querySelectorAll('button,a,input[type=button],input[type=submit]');
             for (var i = 0; i < cels.length; i++) {
